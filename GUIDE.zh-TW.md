@@ -83,3 +83,25 @@ Cloudflare 會處理 SSL 握手並在邊緣節點快取內容。您不需要在 
 1. 將**首次/批次檔案同步**託付給高效能的 CLI 工具 (`aws cli` 或 `rclone`)。
 2. 讓 **`just-s3-offload`** 負責處理日常新增的上傳，以及即時的資料庫網址改寫。
 這種混合模式能讓您的 WordPress 網站保持輕巧、飛速，且完全免除出錯風險。
+
+---
+
+## 5. GCS 與 S3 之間的無縫轉移
+
+因為 `just-gcs-offload` 和 `just-s3-offload` 的資料庫元數據 (Metadata) 結構是完全對稱的，這使得在 Google Cloud Storage 與 Amazon S3（或 S3 相容儲存）之間進行移轉變得無比簡單：
+
+1. **GCS 中繼資料 (`_wp_gcs_info`)**：`['bucket' => ..., 'prefix' => ..., 'file' => ...]`
+2. **S3 中繼資料 (`_wp_s3_info`)**：`['bucket' => ..., 'prefix' => ..., 'file' => ...]`
+
+在使用 `rclone` 等工具同步完儲存桶中的實體檔案後，您只需要在 WordPress 資料庫中執行一行 SQL 指令，即可更新所有媒體庫關聯：
+
+```sql
+-- 從 GCS 轉移到 S3：
+UPDATE wp_postmeta SET meta_key = '_wp_s3_info' WHERE meta_key = '_wp_gcs_info';
+
+-- 從 S3 轉移到 GCS：
+UPDATE wp_postmeta SET meta_key = '_wp_gcs_info' WHERE meta_key = '_wp_s3_info';
+```
+
+接著停用舊外掛、啟用新外掛並設定金鑰，整個移轉過程便能在數秒內無縫完成，完全不會有破圖問題！
+
