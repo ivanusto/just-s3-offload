@@ -1,6 +1,6 @@
 === Just S3 Offload ===
 Contributors: ivanusto
-Tags: amazon s3, s3, offload, media library, cdn, cloudflare r2, backblaze b2
+Tags: amazon s3, s3, offload, media library, cdn
 Requires at least: 5.0
 Tested up to: 7.0
 Requires PHP: 7.4
@@ -8,7 +8,7 @@ Stable tag: 1.1.0
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
-A lightweight, dependency-free plugin that offloads the WordPress Media Library to Amazon S3 or S3-compatible cloud storage (such as Cloudflare R2, Backblaze B2, MinIO, or DigitalOcean Spaces).
+A lightweight, dependency-free WordPress plugin to offload Media Library to Amazon S3 or S3-compatible cloud storage.
 
 == Description ==
 
