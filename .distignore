@@ -1,0 +1,7 @@
+.distignore
+.git
+.gitignore
+.github
+GUIDE.md
+GUIDE.zh-TW.md
+README.zh-TW.md
