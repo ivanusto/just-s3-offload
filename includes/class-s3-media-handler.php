@@ -31,6 +31,10 @@ class Just_WP_S3_Media_Handler {
 
 		// Hook into attachment deletion to clean up S3 files
 		add_action( 'delete_attachment', array( $this, 'delete_attachment_files' ) );
+
+		// Fetch offloaded files back from S3 on demand when a local copy is needed
+		// (e.g. the built-in image editor) but was deleted after offload
+		add_filter( 'get_attached_file', array( $this, 'maybe_rehydrate_local_file' ), 10, 2 );
 	}
 
 	/**
@@ -81,7 +85,20 @@ class Just_WP_S3_Media_Handler {
 			);
 		}
 
-		// 2. Add all intermediate size files to upload queue
+		// 2. Add the pre-conversion/pre-scaled original image (e.g. the JPEG source of a
+		// WebP conversion) so wp_get_original_image_url() also resolves on S3
+		if ( ! empty( $metadata['original_image'] ) ) {
+			$relative_original_path = $relative_dir ? $relative_dir . '/' . $metadata['original_image'] : $metadata['original_image'];
+			$local_original_file    = $basedir . '/' . $relative_original_path;
+			if ( $relative_original_path !== $main_file && file_exists( $local_original_file ) ) {
+				$files_to_upload[] = array(
+					'local_path' => $local_original_file,
+					's3_key'     => $this->build_s3_key( $prefix, $relative_original_path ),
+				);
+			}
+		}
+
+		// 3. Add all intermediate size files to upload queue
 		if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
 			foreach ( $metadata['sizes'] as $size => $size_info ) {
 				if ( empty( $size_info['file'] ) ) {
@@ -101,7 +118,7 @@ class Just_WP_S3_Media_Handler {
 			}
 		}
 
-		// 3. Perform uploads
+		// 4. Perform uploads
 		$uploaded_successfully = array();
 		$failed_uploads        = array();
 
@@ -113,14 +130,14 @@ class Just_WP_S3_Media_Handler {
 					'error' => $upload->get_error_message()
 				);
 				if ( defined( 'WP_DEBUG' ) && WP_DEBUG ) {
-					error_log( sprintf( 'Just S3 Offload: Upload failed for %s. Error: %s', $file_info['local_path'], $upload->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
+					error_log( sprintf( 'Just S3 Offload: Upload failed for %s. Error: %s', $file_info['local_path'], $upload->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Only logs when WP_DEBUG is enabled.
 				}
 			} else {
 				$uploaded_successfully[] = $file_info;
 			}
 		}
 
-		// 4. Save metadata flag and delete local files if configured and everything succeeded
+		// 5. Save metadata flag and delete local files if configured and everything succeeded
 		if ( count( $uploaded_successfully ) > 0 && count( $failed_uploads ) === 0 ) {
 			// Save sync metadata
 			$s3_info = array(
@@ -141,6 +158,49 @@ class Just_WP_S3_Media_Handler {
 
 		delete_post_meta( $attachment_id, '_wp_s3_processing' );
 		return $metadata;
+	}
+
+	/**
+	 * Download the attached file back from S3 when the local copy is missing.
+	 *
+	 * Only runs in admin and WP-CLI contexts, so front-end requests never trigger
+	 * bucket downloads. Each attachment is attempted at most once per request.
+	 *
+	 * @param string $file          Local file path.
+	 * @param int    $attachment_id Attachment post ID.
+	 * @return string The local file path (unchanged).
+	 */
+	public function maybe_rehydrate_local_file( $file, $attachment_id ) {
+		static $attempted = array();
+
+		if ( empty( $file ) || file_exists( $file ) || isset( $attempted[ $attachment_id ] ) ) {
+			return $file;
+		}
+
+		if ( ! is_admin() && ! ( defined( 'WP_CLI' ) && WP_CLI ) ) {
+			return $file;
+		}
+
+		$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
+		if ( ! $s3_info || ! is_array( $s3_info ) || empty( $s3_info['bucket'] ) ) {
+			return $file;
+		}
+
+		$attempted[ $attachment_id ] = true;
+
+		$relative_path = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( empty( $relative_path ) ) {
+			return $file;
+		}
+
+		$prefix = isset( $s3_info['prefix'] ) ? $s3_info['prefix'] : '';
+		$result = $this->client->download_file( $this->build_s3_key( $prefix, $relative_path ), $file );
+
+		if ( is_wp_error( $result ) && defined( 'WP_DEBUG' ) && WP_DEBUG ) {
+			error_log( sprintf( 'Just S3 Offload: Rehydrate failed for attachment %d: %s', $attachment_id, $result->get_error_message() ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Only logs when WP_DEBUG is enabled.
+		}
+
+		return $file;
 	}
 
 	/**
@@ -197,7 +257,7 @@ class Just_WP_S3_Media_Handler {
 			$width     = isset( $metadata['width'] ) ? $metadata['width'] : 0;
 			$height    = isset( $metadata['height'] ) ? $metadata['height'] : 0;
 		} elseif ( is_string( $size ) && isset( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) && isset( $metadata['sizes'][ $size ] ) && is_array( $metadata['sizes'][ $size ] ) ) {
-			$size_data       = $metadata['sizes'][ $size ];
+			$size_data = $metadata['sizes'][ $size ];
 			$file_name       = isset( $size_data['file'] ) ? $size_data['file'] : '';
 			$width           = isset( $size_data['width'] ) ? $size_data['width'] : 0;
 			$height          = isset( $size_data['height'] ) ? $size_data['height'] : 0;
@@ -280,6 +340,14 @@ class Just_WP_S3_Media_Handler {
 		if ( ! empty( $main_file ) ) {
 			$s3_main_key = $this->build_s3_key( $prefix, $main_file );
 			$this->client->delete_file( $s3_main_key );
+		}
+
+		// Delete the pre-conversion original image key
+		if ( ! empty( $metadata['original_image'] ) ) {
+			$relative_original_path = $relative_dir ? $relative_dir . '/' . $metadata['original_image'] : $metadata['original_image'];
+			if ( $relative_original_path !== $main_file ) {
+				$this->client->delete_file( $this->build_s3_key( $prefix, $relative_original_path ) );
+			}
 		}
 
 		// Delete sizes keys

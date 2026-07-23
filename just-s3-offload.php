@@ -3,7 +3,7 @@
  * Plugin Name: Just S3 Offload
  * Plugin URI:  https://github.com/ivanusto/just-s3-offload
  * Description: A lightweight, dependency-free plugin to offload WordPress Media Library to Amazon S3 or S3-compatible storage (R2, B2, Spaces, MinIO) using custom SigV4 authentication.
- * Version:     1.1.0
+ * Version:     1.3.0
  * Author:      Ivan Lin
  * Author URI:  https://yblog.org
  * License:     MIT
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Define Constants
-define( 'JUST_WP_S3_VERSION', '1.1.0' );
+define( 'JUST_WP_S3_VERSION', '1.3.0' );
 define( 'JUST_WP_S3_PATH', plugin_dir_path( __FILE__ ) );
 define( 'JUST_WP_S3_URL', plugin_dir_url( __FILE__ ) );
 

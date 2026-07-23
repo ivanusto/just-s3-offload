@@ -64,28 +64,37 @@ class Just_WP_S3_CLI {
 		$synced_count  = 0;
 		$skipped_count = 0;
 
-		foreach ( $attachment_ids as $attachment_id ) {
-			$progress->tick();
+		foreach ( array_chunk( $attachment_ids, 500 ) as $chunk ) {
+			// Prime the meta cache for the whole chunk with a single query.
+			update_meta_cache( 'post', $chunk );
 
-			$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
-			if ( ! empty( $s3_info ) && ! $overwrite ) {
-				$skipped_count++;
-				continue;
+			foreach ( $chunk as $attachment_id ) {
+				$progress->tick();
+
+				$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
+				if ( ! empty( $s3_info ) && ! $overwrite ) {
+					$skipped_count++;
+					continue;
+				}
+
+				$main_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
+				if ( empty( $main_file ) ) {
+					continue;
+				}
+
+				$s3_info = array(
+					'bucket' => $bucket,
+					'prefix' => $prefix,
+					'file'   => $main_file
+				);
+
+				update_post_meta( $attachment_id, '_wp_s3_info', $s3_info );
+				$synced_count++;
 			}
 
-			$main_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
-			if ( empty( $main_file ) ) {
-				continue;
-			}
-
-			$s3_info = array(
-				'bucket' => $bucket,
-				'prefix' => $prefix,
-				'file'   => $main_file
-			);
-
-			update_post_meta( $attachment_id, '_wp_s3_info', $s3_info );
-			$synced_count++;
+			// The in-process object cache grows unbounded in long CLI loops; release it
+			// per chunk so memory stays flat on large media libraries.
+			$this->flush_runtime_cache();
 		}
 
 		$progress->finish();
@@ -145,96 +154,129 @@ class Just_WP_S3_CLI {
 		$failed_count  = 0;
 		$skipped_count = 0;
 
-		foreach ( $attachment_ids as $attachment_id ) {
-			$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
-			if ( ! empty( $s3_info ) && ! $overwrite ) {
-				$skipped_count++;
-				continue;
-			}
+		foreach ( array_chunk( $attachment_ids, 100 ) as $chunk ) {
+			// Prime the meta cache for the whole chunk with a single query.
+			update_meta_cache( 'post', $chunk );
 
-			$main_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
-			if ( empty( $main_file ) ) {
-				continue;
-			}
+			foreach ( $chunk as $attachment_id ) {
+				$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
+				if ( ! empty( $s3_info ) && ! $overwrite ) {
+					$skipped_count++;
+					continue;
+				}
 
-			$local_main_file = $basedir . '/' . $main_file;
-			if ( ! file_exists( $local_main_file ) ) {
-				WP_CLI::warning( sprintf( 'Local file not found for ID %d: %s', $attachment_id, $local_main_file ) );
-				$failed_count++;
-				continue;
-			}
+				$main_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
+				if ( empty( $main_file ) ) {
+					continue;
+				}
 
-			WP_CLI::log( sprintf( 'Uploading Attachment ID %d (%s)...', $attachment_id, basename( $main_file ) ) );
+				$local_main_file = $basedir . '/' . $main_file;
+				if ( ! file_exists( $local_main_file ) ) {
+					WP_CLI::warning( sprintf( 'Local file not found for ID %d: %s', $attachment_id, $local_main_file ) );
+					$failed_count++;
+					continue;
+				}
 
-			$metadata     = wp_get_attachment_metadata( $attachment_id );
-			$relative_dir = dirname( $main_file );
-			if ( $relative_dir === '.' ) {
-				$relative_dir = '';
-			}
+				WP_CLI::log( sprintf( 'Uploading Attachment ID %d (%s)...', $attachment_id, basename( $main_file ) ) );
 
-			$files_to_upload = array();
+				$metadata     = wp_get_attachment_metadata( $attachment_id );
+				$relative_dir = dirname( $main_file );
+				if ( $relative_dir === '.' ) {
+					$relative_dir = '';
+				}
 
-			// Add main file
-			$s3_main_key = $this->build_s3_key( $prefix, $main_file );
-			$files_to_upload[] = array(
-				'local_path' => $local_main_file,
-				's3_key'     => $s3_main_key
-			);
+				$files_to_upload = array();
 
-			// Add size files
-			if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
-				foreach ( $metadata['sizes'] as $size => $size_info ) {
-					if ( empty( $size_info['file'] ) ) {
-						continue;
-					}
-					$size_file_name = $size_info['file'];
-					$relative_size_path = $relative_dir ? $relative_dir . '/' . $size_file_name : $size_file_name;
-					$local_size_file = $basedir . '/' . $relative_size_path;
+				// Add main file
+				$s3_main_key = $this->build_s3_key( $prefix, $main_file );
+				$files_to_upload[] = array(
+					'local_path' => $local_main_file,
+					's3_key'     => $s3_main_key
+				);
 
-					if ( file_exists( $local_size_file ) ) {
-						$s3_size_key = $this->build_s3_key( $prefix, $relative_size_path );
+				// Add original image (pre-conversion source, e.g. the JPEG of a WebP)
+				if ( ! empty( $metadata['original_image'] ) ) {
+					$relative_original_path = $relative_dir ? $relative_dir . '/' . $metadata['original_image'] : $metadata['original_image'];
+					$local_original_file    = $basedir . '/' . $relative_original_path;
+					if ( $relative_original_path !== $main_file && file_exists( $local_original_file ) ) {
 						$files_to_upload[] = array(
-							'local_path' => $local_size_file,
-							's3_key'     => $s3_size_key
+							'local_path' => $local_original_file,
+							's3_key'     => $this->build_s3_key( $prefix, $relative_original_path )
 						);
 					}
 				}
-			}
 
-			// Perform uploads
-			$uploaded_successfully = array();
-			$failed_uploads        = array();
+				// Add size files
+				if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+					foreach ( $metadata['sizes'] as $size => $size_info ) {
+						if ( empty( $size_info['file'] ) ) {
+							continue;
+						}
+						$size_file_name = $size_info['file'];
+						$relative_size_path = $relative_dir ? $relative_dir . '/' . $size_file_name : $size_file_name;
+						$local_size_file = $basedir . '/' . $relative_size_path;
 
-			foreach ( $files_to_upload as $file_info ) {
-				$upload = $client->upload_file( $file_info['local_path'], $file_info['s3_key'] );
-				if ( is_wp_error( $upload ) ) {
-					$failed_uploads[] = $upload->get_error_message();
-				} else {
-					$uploaded_successfully[] = $file_info;
-				}
-			}
-
-			if ( count( $uploaded_successfully ) > 0 && count( $failed_uploads ) === 0 ) {
-				$s3_info_new = array(
-					'bucket' => $bucket,
-					'prefix' => $prefix,
-					'file'   => $main_file
-				);
-				update_post_meta( $attachment_id, '_wp_s3_info', $s3_info_new );
-				$success_count++;
-
-				if ( $delete_local ) {
-					foreach ( $uploaded_successfully as $file_info ) {
-						wp_delete_file( $file_info['local_path'] );
+						if ( file_exists( $local_size_file ) ) {
+							$s3_size_key = $this->build_s3_key( $prefix, $relative_size_path );
+							$files_to_upload[] = array(
+								'local_path' => $local_size_file,
+								's3_key'     => $s3_size_key
+							);
+						}
 					}
 				}
-			} else {
-				WP_CLI::warning( sprintf( 'Failed to upload ID %d. Errors: %s', $attachment_id, implode( ', ', $failed_uploads ) ) );
-				$failed_count++;
+
+				// Perform uploads
+				$uploaded_successfully = array();
+				$failed_uploads        = array();
+
+				foreach ( $files_to_upload as $file_info ) {
+					$upload = $client->upload_file( $file_info['local_path'], $file_info['s3_key'] );
+					if ( is_wp_error( $upload ) ) {
+						$failed_uploads[] = $upload->get_error_message();
+					} else {
+						$uploaded_successfully[] = $file_info;
+					}
+				}
+
+				if ( count( $uploaded_successfully ) > 0 && count( $failed_uploads ) === 0 ) {
+					$s3_info_new = array(
+						'bucket' => $bucket,
+						'prefix' => $prefix,
+						'file'   => $main_file
+					);
+					update_post_meta( $attachment_id, '_wp_s3_info', $s3_info_new );
+					$success_count++;
+
+					if ( $delete_local ) {
+						foreach ( $uploaded_successfully as $file_info ) {
+							wp_delete_file( $file_info['local_path'] );
+						}
+					}
+				} else {
+					WP_CLI::warning( sprintf( 'Failed to upload ID %d. Errors: %s', $attachment_id, implode( ', ', $failed_uploads ) ) );
+					$failed_count++;
+				}
 			}
+
+			// The in-process object cache grows unbounded in long CLI loops; release it
+			// per chunk so memory stays flat on large media libraries.
+			$this->flush_runtime_cache();
 		}
 
 		WP_CLI::success( sprintf( 'Sync file uploads completed. Success: %d, Failed: %d, Skipped: %d', $success_count, $failed_count, $skipped_count ) );
+	}
+
+	/**
+	 * Clear the in-process object cache without touching persistent caches
+	 * (Redis/Memcached) where possible. wp_cache_flush_runtime() requires WP 6.1+.
+	 */
+	private function flush_runtime_cache() {
+		if ( function_exists( 'wp_cache_flush_runtime' ) ) {
+			wp_cache_flush_runtime();
+		} else {
+			wp_cache_flush();
+		}
 	}
 
 	private function build_s3_key( $prefix, $relative_path ) {

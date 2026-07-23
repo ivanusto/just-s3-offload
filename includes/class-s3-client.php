@@ -159,6 +159,12 @@ class Just_WP_S3_Client {
 			'httpversion' => '1.1',
 		);
 
+		// Optional streaming download support (used by download_file).
+		if ( ! empty( $args['stream'] ) && ! empty( $args['filename'] ) ) {
+			$request_args['stream']   = true;
+			$request_args['filename'] = $args['filename'];
+		}
+
 		return wp_remote_request( $url, $request_args );
 	}
 
@@ -245,6 +251,57 @@ class Just_WP_S3_Client {
 			$body = wp_remote_retrieve_body( $response );
 			/* translators: 1: HTTP status code, 2: Response body returned by S3. */
 			return new WP_Error( 'delete_failed', sprintf( __( 'Failed to delete object from S3. Response code: %1$d. Response: %2$s', 'just-s3-offload' ), $code, $body ) );
+		}
+
+		return true;
+	}
+
+	/**
+	 * Download an object from S3 to a local file path.
+	 *
+	 * @param string $s3_path    Path of the object in the S3 bucket.
+	 * @param string $local_path Absolute local destination path.
+	 * @return bool|WP_Error True on success, WP_Error on failure.
+	 */
+	public function download_file( $s3_path, $local_path ) {
+		$dir = dirname( $local_path );
+		if ( ! wp_mkdir_p( $dir ) ) {
+			/* translators: %s: Directory path. */
+			return new WP_Error( 'mkdir_failed', sprintf( __( 'Failed to create local directory: %s', 'just-s3-offload' ), $dir ) );
+		}
+
+		// Stream into a temp file so a failed download never leaves a partial file
+		// at the final path.
+		$tmp_path = $local_path . '.s3-download';
+
+		$response = $this->make_s3_request( 'GET', $s3_path, array(
+			'timeout'  => 120,
+			'stream'   => true,
+			'filename' => $tmp_path,
+		) );
+
+		if ( is_wp_error( $response ) ) {
+			wp_delete_file( $tmp_path );
+			return $response;
+		}
+
+		$code = wp_remote_retrieve_response_code( $response );
+		if ( $code !== 200 ) {
+			wp_delete_file( $tmp_path );
+			/* translators: 1: HTTP status code, 2: Object path in the bucket. */
+			return new WP_Error( 'download_failed', sprintf( __( 'Download from S3 failed with status %1$d for object: %2$s', 'just-s3-offload' ), $code, $s3_path ) );
+		}
+
+		global $wp_filesystem;
+		if ( ! function_exists( 'WP_Filesystem' ) ) {
+			require_once ABSPATH . 'wp-admin/includes/file.php';
+		}
+		WP_Filesystem();
+
+		if ( ! $wp_filesystem || ! $wp_filesystem->move( $tmp_path, $local_path, true ) ) {
+			wp_delete_file( $tmp_path );
+			/* translators: %s: Local file path. */
+			return new WP_Error( 'move_failed', sprintf( __( 'Failed to move downloaded file into place: %s', 'just-s3-offload' ), $local_path ) );
 		}
 
 		return true;

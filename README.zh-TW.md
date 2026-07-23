@@ -25,7 +25,7 @@
 
 * PHP 7.4 或更高版本
 * 已啟用 PHP Hash 擴充功能
-* WordPress 5.0 或更高版本
+* WordPress 6.0 或更高版本
 
 ## 安裝步驟
 

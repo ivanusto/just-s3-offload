@@ -25,7 +25,7 @@ Unlike other bloated cloud storage plugins, **Just S3 Offload** is designed to b
 
 * PHP 7.4 or higher
 * PHP Hash extension enabled
-* WordPress 5.0 or higher
+* WordPress 6.0 or higher
 
 ## Installation
 
