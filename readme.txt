@@ -5,8 +5,8 @@ Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
 Stable tag: 1.3.1
-License: MIT
-License URI: https://opensource.org/licenses/MIT
+License: GPLv2 or later
+License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
 A lightweight, dependency-free WordPress plugin to offload Media Library to Amazon S3 or S3-compatible cloud storage.
 

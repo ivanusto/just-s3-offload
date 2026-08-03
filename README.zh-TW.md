@@ -98,4 +98,4 @@ wp s3-offload sync-all [--delete-local] [--overwrite]
 
 ## 授權條款
 
-本專案採用 MIT 授權條款。
+本專案採用 GPLv2 or later 授權條款。
