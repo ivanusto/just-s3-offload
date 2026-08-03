@@ -231,7 +231,7 @@ class Just_WP_S3_Settings {
 			<input type="checkbox" name="just_wp_s3_path_style" id="just_wp_s3_path_style" value="1" <?php checked( $value, '1' ); ?> />
 			<?php esc_html_e( 'Force path-style URLs', 'just-s3-offload' ); ?>
 		</label>
-		<p class="description"><?php esc_html_e( 'Enable if your custom S3 provider requires path-style addressing (e.g., https://endpoint.com/bucket/file instead of https://bucket.endpoint.com/file). Often required for MinIO or local dev environments.', 'just-s3-offload' ); ?></p>
+		<p class="description"><?php esc_html_e( 'Enable if your custom S3 provider requires path-style addressing (e.g., https://endpoint.com/bucket/file instead of https://bucket.endpoint.com/file). Often required for MinIO or local dev environments. Note: path-style is applied automatically when the bucket name contains dots (e.g. assets.example.com), since virtual-hosted-style URLs would fail TLS certificate validation.', 'just-s3-offload' ); ?></p>
 		<?php
 	}
 

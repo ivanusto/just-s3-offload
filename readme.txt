@@ -4,7 +4,7 @@ Tags: amazon s3, s3, offload, media library, cdn
 Requires at least: 6.0
 Tested up to: 7.0
 Requires PHP: 7.4
-Stable tag: 1.3.0
+Stable tag: 1.3.1
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -46,6 +46,9 @@ No. The plugin implements a minimal S3 REST client in pure PHP with no external 
 Either enable public access via bucket policy, or check the "Set Public ACL" option in the plugin settings to apply a `public-read` ACL to every uploaded file.
 
 == Changelog ==
+
+= 1.3.1 =
+* Fix: bucket names containing dots (e.g. `assets.example.com`) failed the connection test and all S3 requests with cURL error 60 (TLS certificate mismatch), because virtual-hosted-style URLs produce multi-level subdomains that wildcard certificates cannot cover. Path-style addressing is now applied automatically for such buckets, for both API requests and generated file URLs.
 
 = 1.3.0 =
 * New: on-demand rehydration. When a local file is missing but the attachment is offloaded (e.g. after enabling "Delete Local Files"), the plugin automatically downloads it back from S3 the moment WordPress needs the local path — so the built-in image editor and thumbnail regeneration keep working. Downloads only trigger in admin and WP-CLI contexts, never on the front end.

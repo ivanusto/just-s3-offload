@@ -34,12 +34,26 @@ class Just_WP_S3_Client {
 		$s3_path = ltrim( $s3_path, '/' );
 
 		// 1. Determine Host and Request URL
+		// Bucket names containing dots (e.g. "assets.example.com") produce multi-level
+		// subdomains in virtual-hosted-style URLs, which wildcard TLS certificates
+		// (*.s3.region.amazonaws.com) cannot cover. Force path-style for them.
+		if ( strpos( $bucket, '.' ) !== false ) {
+			$path_style = true;
+		}
+
 		if ( empty( $endpoint ) ) {
 			// Default AWS S3 Host
-			// AWS virtual-host style URL: https://{bucket}.s3.{region}.amazonaws.com/{path}
-			$host = $bucket . '.s3.' . $region . '.amazonaws.com';
-			$url  = 'https://' . $host . '/' . $s3_path;
-			$canonical_uri = '/' . $s3_path;
+			if ( $path_style ) {
+				// Path-style URL: https://s3.{region}.amazonaws.com/{bucket}/{path}
+				$host = 's3.' . $region . '.amazonaws.com';
+				$url  = 'https://' . $host . '/' . $bucket . '/' . $s3_path;
+				$canonical_uri = '/' . $bucket . '/' . $s3_path;
+			} else {
+				// AWS virtual-host style URL: https://{bucket}.s3.{region}.amazonaws.com/{path}
+				$host = $bucket . '.s3.' . $region . '.amazonaws.com';
+				$url  = 'https://' . $host . '/' . $s3_path;
+				$canonical_uri = '/' . $s3_path;
+			}
 		} else {
 			// Custom S3 compatible endpoint (e.g., MinIO, Cloudflare R2, B2)
 			$endpoint_parsed = wp_parse_url( $endpoint );

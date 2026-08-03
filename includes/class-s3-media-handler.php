@@ -396,14 +396,24 @@ class Just_WP_S3_Media_Handler {
 		$region     = get_option( 'just_wp_s3_region', 'us-east-1' );
 		$path_style = get_option( 'just_wp_s3_path_style', '0' ) === '1';
 
+		// Bucket names containing dots break wildcard TLS certificates in
+		// virtual-hosted-style URLs. Force path-style for them.
+		if ( strpos( $bucket, '.' ) !== false ) {
+			$path_style = true;
+		}
+
+		$aws_url = $path_style
+			? 'https://s3.' . $region . '.amazonaws.com/' . $bucket . '/' . $s3_key
+			: 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com/' . $s3_key;
+
 		if ( empty( $endpoint ) ) {
 			// Default AWS S3 URL
-			return 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com/' . $s3_key;
+			return $aws_url;
 		} else {
 			$endpoint_parsed = wp_parse_url( $endpoint );
 			if ( ! $endpoint_parsed || empty( $endpoint_parsed['host'] ) ) {
 				// Fallback to default
-				return 'https://' . $bucket . '.s3.' . $region . '.amazonaws.com/' . $s3_key;
+				return $aws_url;
 			}
 			$ep_host   = $endpoint_parsed['host'];
 			$ep_scheme = isset( $endpoint_parsed['scheme'] ) ? $endpoint_parsed['scheme'] : 'https';
