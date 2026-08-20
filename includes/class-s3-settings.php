@@ -700,6 +700,12 @@ class Just_WP_S3_Settings {
 				continue;
 			}
 
+			if ( just_wp_s3_should_skip_attachment( $attachment_id ) ) {
+				/* translators: %d: Attachment ID. */
+				$logs[] = sprintf( __( 'ID %d: Excluded from offload, skipped.', 'just-s3-offload' ), $attachment_id );
+			continue;
+			}
+
 			$main_file = get_post_meta( $attachment_id, '_wp_attached_file', true );
 			if ( empty( $main_file ) ) {
 				/* translators: %d: Attachment ID. */
@@ -724,52 +730,21 @@ class Just_WP_S3_Settings {
 					continue;
 				}
 
-				$metadata     = wp_get_attachment_metadata( $attachment_id );
-				$relative_dir = dirname( $main_file );
-				if ( $relative_dir === '.' ) {
-					$relative_dir = '';
-				}
+				$metadata = wp_get_attachment_metadata( $attachment_id );
 
 				$files_to_upload = array();
 
-				// Add main file
-				$s3_main_key = $this->build_s3_key( $prefix, $main_file );
-				$files_to_upload[] = array(
-					'local_path' => $local_main_file,
-					's3_key'     => $s3_main_key
-				);
-
-				// Add original image (pre-conversion source, e.g. the JPEG of a WebP)
-				if ( ! empty( $metadata['original_image'] ) ) {
-					$relative_original_path = $relative_dir ? $relative_dir . '/' . $metadata['original_image'] : $metadata['original_image'];
-					$local_original_file    = $basedir . '/' . $relative_original_path;
-					if ( $relative_original_path !== $main_file && file_exists( $local_original_file ) ) {
-						$files_to_upload[] = array(
-							'local_path' => $local_original_file,
-							's3_key'     => $this->build_s3_key( $prefix, $relative_original_path )
-						);
+				foreach ( just_wp_s3_collect_attachment_files( $metadata, $main_file ) as $relative_path ) {
+					$local_path = $basedir . '/' . $relative_path;
+					if ( ! file_exists( $local_path ) ) {
+						continue;
 					}
+					$files_to_upload[] = array(
+						'local_path' => $local_path,
+						's3_key'     => $this->build_s3_key( $prefix, $relative_path )
+					);
 				}
 
-				// Add size files
-				if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
-					foreach ( $metadata['sizes'] as $size => $size_info ) {
-						if ( empty( $size_info['file'] ) ) {
-							continue;
-						}
-						$size_file_name = $size_info['file'];
-						$relative_size_path = $relative_dir ? $relative_dir . '/' . $size_file_name : $size_file_name;
-						$local_size_file = $basedir . '/' . $relative_size_path;
-
-						if ( file_exists( $local_size_file ) ) {
-							$s3_size_key = $this->build_s3_key( $prefix, $relative_size_path );
-							$files_to_upload[] = array(
-								'local_path' => $local_size_file,
-								's3_key'     => $s3_size_key
-							);
-						}
-					}
-				}
 
 				$uploaded_successfully = array();
 				$failed_uploads        = array();
