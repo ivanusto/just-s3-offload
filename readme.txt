@@ -4,7 +4,7 @@ Tags: amazon s3, s3, offload, media library, cdn
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.0
+Stable tag: 1.4.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -46,6 +46,10 @@ No. The plugin implements a minimal S3 REST client in pure PHP with no external 
 Either enable public access via bucket policy, or check the "Set Public ACL" option in the plugin settings to apply a `public-read` ACL to every uploaded file.
 
 == Changelog ==
+
+= 1.4.1 =
+* Fixed: files recorded under `sources` were never offloaded. The WordPress Performance team's Modern Image Formats plugin (`webp-uploads`) stores one file per output format there - on the attachment metadata and on every sub-size - and the converted WebP or AVIF exists nowhere else. With that plugin configured to keep the original format alongside the modern one, a stock upload produced twelve files of which only seven reached the bucket; the five derivatives 404ed, so the `<picture>` sources on the front end pointed at objects that did not exist, and deleting the attachment left them behind.
+* Note: sites where the modern format replaces the original - the default, and the case where `_wp_attached_file` already points at the `.webp` - were unaffected, because the original is recorded as `original_image` and was already handled.
 
 = 1.4.0 =
 * Fixed: uploading a single image issued far more S3 requests than it had files. WordPress saves the attachment metadata once per generated sub-size, and the plugin re-uploaded every file already on disk each time, so the request count grew with the square of the sub-size count. Offloading now happens once per request, at the end, and each file is uploaded exactly once.
