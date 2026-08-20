@@ -2,9 +2,9 @@
 Contributors: ivanusto
 Tags: amazon s3, s3, offload, media library, cdn
 Requires at least: 6.0
-Tested up to: 7.0
+Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.3.1
+Stable tag: 1.4.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -46,6 +46,22 @@ No. The plugin implements a minimal S3 REST client in pure PHP with no external 
 Either enable public access via bucket policy, or check the "Set Public ACL" option in the plugin settings to apply a `public-read` ACL to every uploaded file.
 
 == Changelog ==
+
+= 1.4.0 =
+* Fixed: uploading a single image issued far more S3 requests than it had files. WordPress saves the attachment metadata once per generated sub-size, and the plugin re-uploaded every file already on disk each time, so the request count grew with the square of the sub-size count. Offloading now happens once per request, at the end, and each file is uploaded exactly once.
+* Fixed: with "Delete Local Files" enabled, the original was uploaded and deleted on the first metadata save, which happens *before* WordPress generates the sub-sizes. Sub-size generation then had no source image and silently produced nothing, leaving attachments with no thumbnails at all - every size fell back to the full-size original. Local files are now removed only after sub-size generation has finished.
+* Fixed: browsing the Media Library could issue one full-size download per attachment. `get_attached_file` also fires on read-only paths, including the grid view and the block editor media picker, so on a site with "Delete Local Files" enabled a single page of results turned into dozens of bucket downloads. Rehydration now defaults to off and only runs for WP-CLI and the built-in image editor.
+* Fixed: an attachment carrying S3 metadata but no file path produced a URL ending at the bucket rather than an object, which S3 serves as a ListObjects request and bills at the higher LIST rate. Such attachments now fall back to their local URL.
+* Fixed: requests for a size given as `array( width, height )` always returned the full-size original while reporting the requested dimensions as if they were real. Size resolution is now delegated to WordPress core, so the correct sub-size is served.
+* Fixed: deleting a video or audio attachment left its object behind in the bucket. Only images carry a `file` key in their attachment metadata, so the cleanup resolved no files at all for anything else. It now falls back to `_wp_attached_file`.
+* Fixed: object keys are percent-encoded per path segment, so file names containing `#`, `?` or `%` produce a working URL. Sites using a CDN will see a one-off wave of cache misses for any affected file names.
+* Fixed: a failed rehydration is now remembered for an hour instead of being retried on every request.
+* New: WordPress 7.1 companion files are offloaded and deleted alongside the attachment - `source_image` (the HEIC kept next to its JPEG derivative) and `animated_video` / `animated_video_poster` (the MP4/WebM an animated GIF is converted to in the browser, and its poster frame).
+* Fixed: a sub-size file registered under several size names is uploaded and deleted once instead of once per name. WordPress 7.1 deduplicates sizes that share dimensions, so this is now common.
+* New: the site icon is no longer offloaded. Its URLs are printed into the document head on every page load, so it now always stays on the local site rather than depending on the bucket or CDN being reachable.
+* New: `just_wp_s3_skip_attachment`, `just_wp_s3_rehydrate` and `just_wp_s3_companion_meta_keys` filters.
+* Changed: `upload_attachment_files()` is replaced by `queue_attachment_offload()` and `offload_attachment()`. The `_wp_s3_processing` post meta flag is no longer used; existing rows are harmless leftovers.
+* Tested against WordPress 7.1, including the client-side media processing upload flow (`POST /wp/v2/media/{id}/sideload` and `/finalize`).
 
 = 1.3.1 =
 * Fix: bucket names containing dots (e.g. `assets.example.com`) failed the connection test and all S3 requests with cURL error 60 (TLS certificate mismatch), because virtual-hosted-style URLs produce multi-level subdomains that wildcard certificates cannot cover. Path-style addressing is now applied automatically for such buckets, for both API requests and generated file URLs.

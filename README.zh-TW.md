@@ -60,9 +60,23 @@
 * **Custom Domain / CDN URL**：（選填）自訂網域或 CDN 對照網址（例如 `https://cdn.example.com`）。如果留空，將使用預設的 S3 網址結構。
 * **Cache-Control Header**：套用到上傳物件的 Cache-Control 標頭（預設為 `public, max-age=31536000`）。
 * **Set Public ACL**：勾選此項以將上傳物件的 ACL 設為 public-read。
-* **Delete Local Files**：勾選此項可在成功上傳到 S3 後刪除本機的檔案複本。*注意：刪除本機檔案可能會導致 WordPress 內建的圖片編輯器（裁剪/旋轉）功能失效。*
+* **Delete Local Files**：勾選此項可在成功上傳到 S3 後刪除本機的檔案複本。當本機檔案再次被需要時，外掛會即時從 S3 下載回來，因此內建的圖片編輯器（裁剪／旋轉）仍可正常運作。請注意，批量上傳工具與 `wp s3-offload sync-all --delete-local` 各自有獨立的刪除本機檔案開關，與此設定無關。
 
 點擊 **「執行連線測試」** 即可驗證您的憑證與權限是否設定正確。
+
+## Filters
+
+* `just_wp_s3_skip_attachment( bool $skip, int $attachment_id )`：將指定附件排除在卸載之外。網站圖示預設即被排除。
+* `just_wp_s3_companion_meta_keys( string[] $keys )`：視為「主檔案旁伴隨檔案」的 attachment metadata key。預設為 `original_image`、`source_image`、`animated_video`、`animated_video_poster`。
+* `just_wp_s3_rehydrate( bool $allow, int $attachment_id )`：允許本次請求把缺少的本機檔案從 S3 下載回來。
+
+  下載回本機的行為刻意被限縮，因為 `get_attached_file` 在唯讀路徑上也會觸發。其中 `wp_prepare_attachment_for_js()` 會在媒體庫格狀檢視或區塊編輯器媒體選擇器每載入一頁時，對每一筆附件各呼叫一次；若在此下載，單一畫面就會變成數十次全尺寸儲存桶請求。預設只允許 WP-CLI 與內建圖片編輯器。確實需要本機原始檔的工具可自行開啟：
+
+  ```php
+  add_filter( 'just_wp_s3_rehydrate', function ( $allow ) {
+      return defined( 'MY_REGENERATING_THUMBNAILS' ) ? true : $allow;
+  } );
+  ```
 
 ## WP-CLI 命令
 
