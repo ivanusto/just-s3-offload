@@ -32,6 +32,15 @@ class Just_WP_S3_Media_Handler {
 	private $queued = array();
 
 	/**
+	 * Offloaded URLs resolved for uploads-relative paths found in content.
+	 *
+	 * An empty string marks a path that stays local.
+	 *
+	 * @var array<string,string>
+	 */
+	private $content_urls = array();
+
+	/**
 	 * Constructor
 	 */
 	public function __construct( $client ) {
@@ -58,6 +67,10 @@ class Just_WP_S3_Media_Handler {
 		add_filter( 'wp_get_attachment_url', array( $this, 's3_get_attachment_url' ), 10, 2 );
 		add_filter( 'image_downsize', array( $this, 's3_image_downsize' ), 10, 3 );
 		add_filter( 'wp_calculate_image_srcset_sources', array( $this, 's3_image_srcset_sources' ), 10, 5 );
+
+		// Rewrite local URLs already stored in post content. Runs after
+		// wp_filter_content_tags() (priority 12) has added srcset attributes.
+		add_filter( 'the_content', array( $this, 'rewrite_content_urls' ), 20 );
 
 		// Hook into attachment deletion to clean up S3 files
 		add_action( 'delete_attachment', array( $this, 'delete_attachment_files' ) );
@@ -574,6 +587,199 @@ class Just_WP_S3_Media_Handler {
 		}
 
 		return $sources;
+	}
+
+	/**
+	 * Rewrite local uploads URLs in post content to their S3 or CDN URLs.
+	 *
+	 * Post content stores URLs as text, so the attachment URL filters never see
+	 * them. Content written before the attachment was offloaded - by bulk
+	 * migration, or by the block editor before 1.4.2 - would otherwise keep
+	 * pointing at the local copy, which 404s once "Delete Local Files" has
+	 * removed it.
+	 *
+	 * Only files that belong to an offloaded attachment are rewritten, so a URL
+	 * for anything still on local storage is left alone. This catches image
+	 * `src` and `srcset`, links to the full-size file, and file, audio and
+	 * video blocks alike.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param string $content Post content.
+	 * @return string The content with offloaded files pointing at S3.
+	 */
+	public function rewrite_content_urls( $content ) {
+		if ( ! is_string( $content ) || '' === $content ) {
+			return $content;
+		}
+
+		$upload_dir = wp_upload_dir();
+		$baseurl    = isset( $upload_dir['baseurl'] ) ? $upload_dir['baseurl'] : '';
+
+		// Match the uploads URL whatever its scheme, so content written before a
+		// switch to HTTPS, or with protocol-relative URLs, is handled too.
+		$base = preg_replace( '#^https?:#i', '', $baseurl );
+		if ( empty( $base ) || 0 !== strpos( $base, '//' ) || false === stripos( $content, $base ) ) {
+			return $content;
+		}
+
+		// File names never contain these characters: sanitize_file_name()
+		// strips them. Stopping at ',' and whitespace splits srcset entries.
+		$pattern = '#(?:https?:)?' . preg_quote( $base, '#' ) . '/([^\s"\'<>()\[\]{},?\#]+)#i';
+
+		if ( ! preg_match_all( $pattern, $content, $matches ) ) {
+			return $content;
+		}
+
+		$this->resolve_content_urls( array_unique( array_map( 'rawurldecode', $matches[1] ) ) );
+
+		return preg_replace_callback(
+			$pattern,
+			function ( $match ) {
+				$path = rawurldecode( $match[1] );
+				return empty( $this->content_urls[ $path ] ) ? $match[0] : $this->content_urls[ $path ];
+			},
+			$content
+		);
+	}
+
+	/**
+	 * Resolve uploads-relative paths to offloaded URLs, in one query.
+	 *
+	 * Fills $this->content_urls for every path not resolved earlier in the
+	 * request.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param string[] $paths Uploads-relative paths.
+	 */
+	private function resolve_content_urls( $paths ) {
+		global $wpdb;
+
+		$candidates = array();
+		foreach ( $paths as $path ) {
+			if ( ! isset( $this->content_urls[ $path ] ) ) {
+				$candidates[ $path ] = $this->attached_file_candidates( $path );
+			}
+		}
+
+		if ( empty( $candidates ) ) {
+			return;
+		}
+
+		$attached_files = array_values( array_unique( array_merge( ...array_values( $candidates ) ) ) );
+		$placeholders   = implode( ', ', array_fill( 0, count( $attached_files ), '%s' ) );
+
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- One lookup for every file in the content; core has no API to look up several `_wp_attached_file` values. The placeholder list is built from a count.
+		$rows = $wpdb->get_results( $wpdb->prepare( "SELECT post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = '_wp_attached_file' AND meta_value IN ( {$placeholders} )", $attached_files ) );
+
+		$owners = array();
+		foreach ( (array) $rows as $row ) {
+			$owners[ $row->meta_value ] = (int) $row->post_id;
+		}
+
+		if ( $owners ) {
+			update_postmeta_cache( array_values( $owners ) );
+		}
+
+		foreach ( $candidates as $path => $attached_files_for_path ) {
+			$this->content_urls[ $path ] = '';
+
+			foreach ( $attached_files_for_path as $attached_file ) {
+				if ( empty( $owners[ $attached_file ] ) ) {
+					continue;
+				}
+
+				$url = $this->get_offloaded_file_url( $owners[ $attached_file ], $path );
+				if ( '' !== $url ) {
+					$this->content_urls[ $path ] = $url;
+					break;
+				}
+			}
+		}
+	}
+
+	/**
+	 * S3 or CDN URL of one file of an attachment, if that file was offloaded.
+	 *
+	 * The candidate lookup in attached_file_candidates() is a guess; this is
+	 * where it is confirmed against the files the attachment really owns.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param int    $attachment_id Attachment post ID.
+	 * @param string $relative_path Uploads-relative path of the file.
+	 * @return string Fully-qualified URL, or an empty string when the file is
+	 *                not an offloaded file of this attachment.
+	 */
+	private function get_offloaded_file_url( $attachment_id, $relative_path ) {
+		$s3_info = get_post_meta( $attachment_id, '_wp_s3_info', true );
+		if ( ! $s3_info || ! is_array( $s3_info ) || empty( $s3_info['bucket'] ) ) {
+			return '';
+		}
+
+		$metadata  = wp_get_attachment_metadata( $attachment_id );
+		$metadata  = is_array( $metadata ) ? $metadata : array();
+		$main_file = ! empty( $metadata['file'] ) ? $metadata['file'] : get_post_meta( $attachment_id, '_wp_attached_file', true );
+
+		if ( ! in_array( $relative_path, just_wp_s3_collect_attachment_files( $metadata, $main_file ), true ) ) {
+			return '';
+		}
+
+		return $this->get_s3_url( $s3_info, $relative_path );
+	}
+
+	/**
+	 * Possible `_wp_attached_file` values of the attachment owning a file.
+	 *
+	 * Derived from the naming WordPress and Modern Image Formats use for the
+	 * files of one attachment:
+	 *
+	 * - sub-sizes: photo-300x200.jpg
+	 * - big image threshold and EXIF rotation: photo-scaled.jpg, photo-rotated.jpg
+	 *   as the attached file, with the sub-sizes still named after photo.jpg
+	 * - Modern Image Formats: photo-jpg.webp, photo-300x200-jpg.webp
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param string $relative_path Uploads-relative path of the file.
+	 * @return string[] Candidate attached file paths, most specific first.
+	 */
+	private function attached_file_candidates( $relative_path ) {
+		$dir = dirname( $relative_path );
+		$dir = ( '.' === $dir ) ? '' : $dir . '/';
+
+		$name = pathinfo( $relative_path, PATHINFO_FILENAME );
+		$ext  = pathinfo( $relative_path, PATHINFO_EXTENSION );
+
+		$candidates = array( $relative_path );
+
+		if ( '' === $name || '' === $ext
+			|| ! preg_match( '/^(.+?)(-\d+x\d+)?(?:-(jpe?g|png|gif|webp|avif|heic|heif))?$/i', $name, $parts ) ) {
+			return $candidates;
+		}
+
+		$base   = $parts[1];
+		$format = isset( $parts[3] ) ? $parts[3] : '';
+
+		$stems = array( $base . '.' . $ext );
+		if ( '' !== $format ) {
+			// The modern-format file is the attached file: photo-jpg.webp.
+			$stems[] = $base . '-' . $format . '.' . $ext;
+			// The original format is the attached file: photo.jpg.
+			$stems[] = $base . '.' . $format;
+		}
+
+		foreach ( $stems as $stem ) {
+			$stem_name = pathinfo( $stem, PATHINFO_FILENAME );
+			$stem_ext  = pathinfo( $stem, PATHINFO_EXTENSION );
+
+			$candidates[] = $dir . $stem;
+			$candidates[] = $dir . $stem_name . '-scaled.' . $stem_ext;
+			$candidates[] = $dir . $stem_name . '-rotated.' . $stem_ext;
+		}
+
+		return array_values( array_unique( $candidates ) );
 	}
 
 	/**
