@@ -49,6 +49,10 @@ class Just_WP_S3_Media_Handler {
 		add_filter( 'wp_update_attachment_metadata', array( $this, 'queue_attachment_offload' ), 10, 2 );
 		add_action( 'shutdown', array( $this, 'process_queued_offloads' ), 20 );
 
+		// The block editor stores the URL from the upload response in the post
+		// content, so that response must not be built before the offload.
+		add_filter( 'rest_request_after_callbacks', array( $this, 'offload_before_rest_response' ), 10, 3 );
+
 		// Hook into URL retrieval filters to rewrite local URLs to S3 URLs
 		add_filter( 'wp_get_attachment_url', array( $this, 's3_get_attachment_url' ), 10, 2 );
 		add_filter( 'image_downsize', array( $this, 's3_image_downsize' ), 10, 3 );
@@ -106,6 +110,83 @@ class Just_WP_S3_Media_Handler {
 		foreach ( $attachment_ids as $attachment_id ) {
 			$this->offload_attachment( $attachment_id );
 		}
+	}
+
+	/**
+	 * Offload one queued attachment now instead of waiting for shutdown.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param int $attachment_id Attachment post ID.
+	 * @return bool True when the attachment was queued and has been processed.
+	 */
+	public function flush_queued_attachment( $attachment_id ) {
+		$attachment_id = (int) $attachment_id;
+
+		if ( ! isset( $this->queued[ $attachment_id ] ) ) {
+			return false;
+		}
+
+		unset( $this->queued[ $attachment_id ] );
+		$this->offload_attachment( $attachment_id );
+
+		return true;
+	}
+
+	/**
+	 * Offload a freshly uploaded attachment before its REST response is sent.
+	 *
+	 * WP_REST_Attachments_Controller computes `source_url` and every
+	 * `media_details.sizes[*].source_url` in the same request as the upload,
+	 * long before the shutdown queue runs. At that point the attachment has no
+	 * `_wp_s3_info` yet, so the URL filters return the local URL, and the block
+	 * editor writes that URL into the post content where nothing rewrites it
+	 * later. Offloading here, after the controller has saved the final
+	 * metadata, and rebuilding the response yields the S3 or CDN URL instead.
+	 *
+	 * Covers every route of the controller that returns a single attachment:
+	 * the upload itself, image edits, post-processing, and the WordPress 7.1
+	 * sideload and finalize calls.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param WP_REST_Response|WP_HTTP_Response|WP_Error|mixed $response Result to send to the client.
+	 * @param array                                            $handler  Route handler used for the request.
+	 * @param WP_REST_Request                                  $request  Request used to generate the response.
+	 * @return WP_REST_Response|WP_HTTP_Response|WP_Error|mixed The response, rebuilt when an offload ran.
+	 */
+	public function offload_before_rest_response( $response, $handler, $request ) {
+		if ( empty( $this->queued ) || ! $response instanceof WP_REST_Response ) {
+			return $response;
+		}
+
+		$controller = ( isset( $handler['callback'] ) && is_array( $handler['callback'] ) ) ? reset( $handler['callback'] ) : null;
+		if ( ! $controller instanceof WP_REST_Attachments_Controller ) {
+			return $response;
+		}
+
+		$data = $response->get_data();
+		if ( ! is_array( $data ) || empty( $data['id'] ) ) {
+			return $response;
+		}
+
+		if ( ! $this->flush_queued_attachment( $data['id'] ) ) {
+			return $response;
+		}
+
+		$post = get_post( (int) $data['id'] );
+		if ( ! $post ) {
+			return $response;
+		}
+
+		// Only the body is replaced: the status, the Location header and the
+		// links set by the controller stay as they were.
+		$rebuilt = $controller->prepare_item_for_response( $post, $request );
+		if ( $rebuilt instanceof WP_REST_Response ) {
+			$response->set_data( $rebuilt->get_data() );
+		}
+
+		return $response;
 	}
 
 	/**
