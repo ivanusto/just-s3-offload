@@ -4,7 +4,7 @@ Tags: amazon s3, s3, offload, media library, cdn
 Requires at least: 6.0
 Tested up to: 7.1
 Requires PHP: 7.4
-Stable tag: 1.4.1
+Stable tag: 1.4.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -47,6 +47,12 @@ Either enable public access via bucket policy, or check the "Set Public ACL" opt
 
 == Changelog ==
 
+= 1.4.2 =
+* Fixed: images uploaded in the block editor were written into the post content with their local URL. Offloading has been queued until the end of the request since 1.4.0, but the REST upload response - `source_url` and every sub-size `source_url` - was built before the queue ran, so it still pointed at `/wp-content/uploads`, and nothing rewrote that URL afterwards. With "Delete Local Files" enabled those images 404ed. The attachment is now offloaded before the response is built, on every attachments route that returns a single attachment: upload, edit, post-process, and the WordPress 7.1 sideload and finalize calls. Each file is still uploaded once.
+* Fixed: the same problem for uploads through the media modal (`upload-attachment`) and for images returned by `crop-image`, whose response comes from `wp_prepare_attachment_for_js()`.
+* New: local uploads URLs already stored in post content are rewritten to S3 or the custom domain on output, when they belong to an offloaded attachment. This repairs content written by the block editor before this release and content written before a bulk migration. Image `src` and `srcset`, links to the full-size file, and file, audio and video blocks are all covered. Files still on local storage keep their URL.
+* Thanks to @johnroyer for the patch.
+
 = 1.4.1 =
 * Fixed: files recorded under `sources` were never offloaded. The WordPress Performance team's Modern Image Formats plugin (`webp-uploads`) stores one file per output format there - on the attachment metadata and on every sub-size - and the converted WebP or AVIF exists nowhere else. With that plugin configured to keep the original format alongside the modern one, a stock upload produced twelve files of which only seven reached the bucket; the five derivatives 404ed, so the `<picture>` sources on the front end pointed at objects that did not exist, and deleting the attachment left them behind.
 * Note: sites where the modern format replaces the original - the default, and the case where `_wp_attached_file` already points at the `.webp` - were unaffected, because the original is recorded as `original_image` and was already handled.
@@ -71,7 +77,7 @@ Either enable public access via bucket policy, or check the "Set Public ACL" opt
 * Fix: bucket names containing dots (e.g. `assets.example.com`) failed the connection test and all S3 requests with cURL error 60 (TLS certificate mismatch), because virtual-hosted-style URLs produce multi-level subdomains that wildcard certificates cannot cover. Path-style addressing is now applied automatically for such buckets, for both API requests and generated file URLs.
 
 = 1.3.0 =
-* New: on-demand rehydration. When a local file is missing but the attachment is offloaded (e.g. after enabling "Delete Local Files"), the plugin automatically downloads it back from S3 the moment WordPress needs the local path — so the built-in image editor and thumbnail regeneration keep working. Downloads only trigger in admin and WP-CLI contexts, never on the front end.
+* New: on-demand rehydration. When a local file is missing but the attachment is offloaded (e.g. after enabling "Delete Local Files"), the plugin automatically downloads it back from S3 the moment WordPress needs the local path - so the built-in image editor and thumbnail regeneration keep working. Downloads only trigger in admin and WP-CLI contexts, never on the front end.
 * New: S3 client download support (streamed to disk via a temp file, so failed downloads never leave partial files).
 * Updated the "Delete Local Files" setting description to reflect the new behavior.
 
