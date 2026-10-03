@@ -52,6 +52,7 @@ class Just_WP_S3_Media_Handler {
 		// The block editor stores the URL from the upload response in the post
 		// content, so that response must not be built before the offload.
 		add_filter( 'rest_request_after_callbacks', array( $this, 'offload_before_rest_response' ), 10, 3 );
+		add_filter( 'wp_prepare_attachment_for_js', array( $this, 'offload_before_js_response' ), 10, 2 );
 
 		// Hook into URL retrieval filters to rewrite local URLs to S3 URLs
 		add_filter( 'wp_get_attachment_url', array( $this, 's3_get_attachment_url' ), 10, 2 );
@@ -187,6 +188,38 @@ class Just_WP_S3_Media_Handler {
 		}
 
 		return $response;
+	}
+
+	/**
+	 * Offload a freshly uploaded attachment before the media modal sees it.
+	 *
+	 * The media modal uploads through admin-ajax (`upload-attachment`), whose
+	 * response comes from wp_prepare_attachment_for_js() in the same request,
+	 * before the shutdown queue runs. The modal keeps that response as the
+	 * attachment model, so inserting the new file into the block editor would
+	 * write its local URL into the post content. The same applies to the
+	 * cropped images returned by `crop-image`.
+	 *
+	 * @since 1.4.2
+	 *
+	 * @param array   $response   Attachment data for JavaScript.
+	 * @param WP_Post $attachment Attachment object.
+	 * @return array The data, rebuilt when an offload ran.
+	 */
+	public function offload_before_js_response( $response, $attachment ) {
+		if ( empty( $this->queued ) || ! $attachment instanceof WP_Post ) {
+			return $response;
+		}
+
+		if ( ! $this->flush_queued_attachment( $attachment->ID ) ) {
+			return $response;
+		}
+
+		// The attachment has left the queue, so the nested call passes
+		// straight through this filter.
+		$rebuilt = wp_prepare_attachment_for_js( $attachment );
+
+		return is_array( $rebuilt ) ? $rebuilt : $response;
 	}
 
 	/**
